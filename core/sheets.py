@@ -14,6 +14,7 @@ class Block:
     creative_col: int                     # índice 0-based
     metric_cols: dict[str, int] = field(default_factory=dict)
     status_col: int | None = None
+    fim_col: int | None = None
 
 
 @dataclass
@@ -26,7 +27,7 @@ class Layout:
 class CellWrite:
     row: int                              # 0-based
     col: int                              # 0-based
-    value: float
+    value: float | str
     metric: str
     old: str
     block: str
@@ -69,6 +70,8 @@ def detect_layout(values: list[list[str]], max_scan: int = 15) -> Layout:
                         b.metric_cols[m] = c
                     if norm[c] == "STATUS" and b.status_col is None:
                         b.status_col = c
+                    if norm[c] == "FIM" and b.fim_col is None:
+                        b.fim_col = c
                 blocks.append(b)
             return Layout(header_row=r, blocks=blocks)
     raise ValueError("Não achei a linha de cabeçalho (precisa ter 'CRIATIVO' e 'GASTO') nas primeiras linhas da aba.")
@@ -88,6 +91,7 @@ def plan_writes(
     only_empty: bool = False,
     skip_status: set[str] | None = None,
     only_status: set[str] | None = None,
+    status_rule: dict | None = None,
 ) -> tuple[list[CellWrite], list[dict]]:
     """Monta a lista de células a gravar + um resumo por linha (para a prévia).
     only_status: se informado, só preenche linhas cujo STATUS está nesse conjunto (ex.: {"TESTE"})."""
@@ -118,6 +122,19 @@ def plan_writes(
                 if only_empty and old.strip():
                     continue
                 writes.append(CellWrite(r, c, round(metrics[m], 6), m, old, b.title, creative))
+            # Regra de fim de teste (só no bloco de TESTE): gastou acima do limite → decide o status
+            rule = status_rule or {}
+            if rule and "TESTE" in normalize(b.title) and b.status_col is not None:
+                new_status = None
+                if metrics["gasto"] > rule.get("spend", 1000):
+                    new_status = "VALIDADO" if metrics["vendas"] >= rule.get("min_sales", 2) else "DESCARTADO"
+                if new_status:
+                    summary[-1]["novo status"] = new_status
+                    writes.append(CellWrite(r, b.status_col, new_status, "status",
+                                            cell(values, r, b.status_col), b.title, creative))
+                    if b.fim_col is not None and rule.get("end_date"):
+                        writes.append(CellWrite(r, b.fim_col, rule["end_date"], "fim",
+                                                cell(values, r, b.fim_col), b.title, creative))
     return writes, summary
 
 
@@ -126,6 +143,7 @@ NUMBER_FORMATS = {
     "brl": {"type": "CURRENCY", "pattern": '"R$" #,##0.00'},
     "int": {"type": "NUMBER", "pattern": "#,##0"},
     "dec": {"type": "NUMBER", "pattern": "0.00"},
+    "date": {"type": "DATE", "pattern": "dd/mm/yyyy"},
 }
 
 
@@ -136,7 +154,8 @@ def write_batch(ws, writes: list[CellWrite], *, apply_format: bool = True, chunk
     if hasattr(ws, "write_runs"):  # planilha via Apps Script: manda blocos de linhas seguidas
         runs, cur = [], None
         for w in sorted(writes, key=lambda w: (w.col, w.row)):
-            fmt = NUMBER_FORMATS[METRIC_FORMAT.get(w.metric, "dec")]["pattern"] if apply_format else None
+            kind = METRIC_FORMAT.get(w.metric, "dec")
+            fmt = NUMBER_FORMATS[kind]["pattern"] if (apply_format and kind in NUMBER_FORMATS) else None
             if cur and cur["col"] == w.col + 1 and cur["row"] + len(cur["values"]) == w.row + 1 and cur["format"] == fmt:
                 cur["values"].append(w.value)
             else:
@@ -148,7 +167,7 @@ def write_batch(ws, writes: list[CellWrite], *, apply_format: bool = True, chunk
         return n
     data = [{"range": a1(w.row, w.col), "values": [[w.value]]} for w in writes]
     for i in range(0, len(data), chunk):
-        _retry(lambda: ws.batch_update(data[i:i + chunk], value_input_option="RAW"), log)
+        _retry(lambda: ws.batch_update(data[i:i + chunk], value_input_option="USER_ENTERED"), log)
         if log:
             log(f"📝 gravadas {min(i + chunk, len(data))}/{len(data)} células")
 
@@ -156,7 +175,9 @@ def write_batch(ws, writes: list[CellWrite], *, apply_format: bool = True, chunk
         # Formata só as células gravadas, agrupando linhas seguidas da mesma coluna
         by_col: dict[tuple[int, str], list[int]] = {}
         for w in writes:
-            by_col.setdefault((w.col, METRIC_FORMAT.get(w.metric, "dec")), []).append(w.row)
+            kind = METRIC_FORMAT.get(w.metric, "dec")
+            if kind in NUMBER_FORMATS:
+                by_col.setdefault((w.col, kind), []).append(w.row)
         fmts = []
         for (c, kind), rows in by_col.items():
             rows = sorted(set(rows))

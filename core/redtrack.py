@@ -95,3 +95,22 @@ def detect_sub(api_key: str, since: date, until: date, matches, *, max_pages: in
         top = ", ".join(f"{k}={v}" for k, v in sorted(scores.items(), key=lambda x: -x[1])[:3])
         log(f"🔍 RedTrack: {total} conversões analisadas; campos que trazem o criativo: {top}")
     return best, scores, types
+
+
+def fetch_conversions(api_key: str, since: date, until: date, *, campaign_ids: list[str] | None = None,
+                      max_pages: int = 50, log=None) -> list[dict]:
+    """Lista de conversões (uma por venda/evento), com o nome do tipo (ex.: Purchase) e os subs."""
+    out: list[dict] = []
+    for page in range(1, max_pages + 1):
+        params = {"api_key": api_key, "date_from": since.isoformat(), "date_to": until.isoformat(),
+                  "per": PER_PAGE, "page": page}
+        if campaign_ids:
+            params["campaign_id"] = ",".join(campaign_ids)
+        payload = get_json(f"{API}/conversions", params, log=log)
+        items = payload.get("items", []) if isinstance(payload, dict) else (payload or [])
+        out.extend(items)
+        if log:
+            log(f"RedTrack conversões página {page}: {len(items)}")
+        if len(items) < PER_PAGE:
+            break
+    return out

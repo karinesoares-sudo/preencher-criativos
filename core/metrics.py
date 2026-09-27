@@ -135,6 +135,7 @@ METRIC_FORMAT = {
     "cpm": "brl", "cpc": "brl", "gasto": "brl", "cpa": "brl", "faturamento": "brl",
     "vendas": "int", "impressoes": "int", "cliques": "int",
     "roas": "dec",
+    "fim": "date", "status": "text",
 }
 
 
