@@ -127,6 +127,19 @@ def write_batch(ws, writes: list[CellWrite], *, apply_format: bool = True, chunk
     """Grava tudo em poucas chamadas (lotes), com nova tentativa se o Google limitar."""
     if not writes:
         return 0
+    if hasattr(ws, "write_runs"):  # planilha via Apps Script: manda blocos de linhas seguidas
+        runs, cur = [], None
+        for w in sorted(writes, key=lambda w: (w.col, w.row)):
+            fmt = NUMBER_FORMATS[METRIC_FORMAT.get(w.metric, "dec")]["pattern"] if apply_format else None
+            if cur and cur["col"] == w.col + 1 and cur["row"] + len(cur["values"]) == w.row + 1 and cur["format"] == fmt:
+                cur["values"].append(w.value)
+            else:
+                cur = {"row": w.row + 1, "col": w.col + 1, "values": [w.value], "format": fmt}
+                runs.append(cur)
+        n = ws.write_runs(runs, log=log)
+        if log:
+            log(f"📝 gravadas {n} células ({len(runs)} blocos)")
+        return n
     data = [{"range": a1(w.row, w.col), "values": [[w.value]]} for w in writes]
     for i in range(0, len(data), chunk):
         _retry(lambda: ws.batch_update(data[i:i + chunk], value_input_option="RAW"), log)

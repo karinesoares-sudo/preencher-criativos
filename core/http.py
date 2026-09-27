@@ -38,6 +38,8 @@ def get_json(
     url: str,
     params: dict | None = None,
     *,
+    method: str = "GET",
+    body: Any = None,
     max_attempts: int = 6,
     base_delay: float = 2.0,
     max_delay: float = 90.0,
@@ -49,7 +51,8 @@ def get_json(
     last_exc: Exception | None = None
     for attempt in range(1, max_attempts + 1):
         try:
-            resp = _session.get(url, params=params, timeout=timeout)
+            resp = (_session.post(url, params=params, json=body, timeout=timeout) if method == "POST"
+                    else _session.get(url, params=params, timeout=timeout))
             try:
                 payload = resp.json()
             except ValueError:
