@@ -183,6 +183,24 @@ selected_camps = st.multiselect(
 if rt_camps and not selected_camps:
     st.warning("Nenhuma campanha escolhida: vou usar TODAS as campanhas do RedTrack (inclui outros gestores).")
 
+if rt_key and st.button("🔎 Testar só o RedTrack (rápido)"):
+    try:
+        with st.spinner("Consultando RedTrack…"):
+            _g = rt_group if rt_group != "automático" else "sub4"
+            _rows = rt.fetch_report_by_sub(rt_key, since, until, group=_g,
+                                           campaign_ids=list(selected_camps) or None, timezone=rt_tz, log=log)
+        _num = {}
+        for r in _rows:
+            for k, v in r.items():
+                if isinstance(v, (int, float)):
+                    _num[k] = _num.get(k, 0) + v
+        st.write(f"{len(_rows)} linhas agrupadas por **{_g}**. Totais dos campos com valor:")
+        st.json({k: round(v, 2) for k, v in sorted(_num.items()) if v})
+        st.write("Primeiras linhas:")
+        st.json(_rows[:5])
+    except Exception as e:
+        st.error(f"RedTrack: {e}")
+
 # ----------------------------------------------------------------- 4. contas
 st.subheader("4. Contas de anúncio do Facebook")
 st.caption("Daqui vêm Hook, Body, CPM, CTR e CPC — só dos anúncios que estão nas campanhas escolhidas acima.")
@@ -319,6 +337,8 @@ def run_redtrack() -> None:
                                              timezone=rt_tz, log=log)
             ss.rt_allowed = {str(r.get(rt_id_sub, "")).strip() for r in id_rows if str(r.get(rt_id_sub, "")).strip()}
             log(f"🎯 {len(ss.rt_allowed)} anúncios (IDs) nas campanhas escolhidas")
+    ss.rt_sample = rows[:8]
+    ss.rt_rowcount = len(rows)
     agg = Aggregator(rx)
     fields = set()
     for r in rows:
@@ -402,6 +422,11 @@ if layout and (has_fb or ss.rt_agg):
             log(f"💾 {n} células gravadas em {ws.title}")
         except Exception as e:
             st.error(f"Erro ao gravar: {e}")
+
+if ss.get("rt_sample") is not None:
+    with st.expander(f"🔎 Diagnóstico RedTrack ({ss.get('rt_rowcount', 0)} linhas recebidas)"):
+        st.caption(f"Agrupado por: {ss.get('rt_group_used')} · campanhas: {', '.join(selected_camps) or 'todas'}")
+        st.json(ss.rt_sample)
 
 with st.expander(f"📜 Registro ({len(ss_log)})"):
     st.code("\n".join(ss_log[-400:]) or "—")
