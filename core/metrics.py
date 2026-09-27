@@ -51,9 +51,14 @@ class Aggregator:
         self.rx = rx
         self.data: dict[str, dict[str, float]] = defaultdict(lambda: {k: 0.0 for k in BASE_KEYS})
         self.unmatched: dict[str, float] = defaultdict(float)  # nome → gasto/vendas sem código
+        self.ids: dict[str, str] = {}  # id do anúncio no Facebook → código do criativo
 
-    def add(self, name: str, values: dict[str, float]) -> None:
+    def add(self, name: str, values: dict[str, float], ad_id: str = "", id_map: dict | None = None) -> None:
         codes = extract_codes(name, self.rx)
+        if not codes and id_map and str(name).strip() in id_map:
+            codes = [id_map[str(name).strip()]]  # o sub traz o ID do anúncio em vez do nome
+        if codes and ad_id:
+            self.ids[str(ad_id)] = codes[0]
         if not codes:
             self.unmatched[name] += values.get("spend", 0) or values.get("sales", 0)
             return
@@ -67,6 +72,7 @@ class Aggregator:
                 self.data[code][k] += v
         for n, v in other.unmatched.items():
             self.unmatched[n] += v
+        self.ids.update(other.ids)
 
     def sum_for(self, codes: Iterable[str], include_variations: bool = False) -> dict[str, float] | None:
         total = {k: 0.0 for k in BASE_KEYS}

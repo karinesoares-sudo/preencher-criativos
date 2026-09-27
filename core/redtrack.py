@@ -64,3 +64,34 @@ def num(row: dict, key: str) -> float:
         return float(row.get(key) or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+CANDIDATE_FIELDS = [f"sub{i}" for i in range(1, 21)] + ["rt_ad", "rt_adgroup", "rt_campaign", "rt_ad_id"]
+
+
+def detect_sub(api_key: str, since: date, until: date, matches, *, max_pages: int = 5, log=None):
+    """Olha as conversões do período e descobre qual sub traz o criativo (nome ou ID do anúncio).
+    matches(valor) -> código ou None. Retorna (melhor_campo, placar, tipos_de_conversão)."""
+    scores = {f: 0 for f in CANDIDATE_FIELDS}
+    types: dict[str, int] = {}
+    total = 0
+    for page in range(1, max_pages + 1):
+        payload = get_json(f"{API}/conversions", {"api_key": api_key, "date_from": since.isoformat(),
+                                                  "date_to": until.isoformat(), "per": PER_PAGE, "page": page}, log=log)
+        items = payload.get("items", []) if isinstance(payload, dict) else (payload or [])
+        for c in items:
+            total += 1
+            t = str(c.get("type") or "?")
+            types[t] = types.get(t, 0) + 1
+            for f in CANDIDATE_FIELDS:
+                if c.get(f) and matches(str(c.get(f))):
+                    scores[f] += 1
+        if len(items) < PER_PAGE:
+            break
+    best = max(scores, key=scores.get) if total else None
+    if best and scores[best] == 0:
+        best = None
+    if log:
+        top = ", ".join(f"{k}={v}" for k, v in sorted(scores.items(), key=lambda x: -x[1])[:3])
+        log(f"🔍 RedTrack: {total} conversões analisadas; campos que trazem o criativo: {top}")
+    return best, scores, types
