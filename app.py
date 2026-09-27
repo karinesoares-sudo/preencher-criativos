@@ -149,9 +149,11 @@ if layout:
                                help="Detectado da planilha. O app procura esse código no nome do anúncio.")
     rx = build_code_regex([p.strip() for p in prefix_txt.split(",")])
 
-    o1 = o2 = adv
-    only_empty = o1.checkbox("Preencher só células vazias (não sobrescrever)", value=False)
-    skip_status = o2.multiselect("Pular linhas com STATUS", sorted(statuses), default=[])
+    only_empty = adv.checkbox("Preencher só células vazias (não sobrescrever)", value=False)
+    skip_status: list[str] = []
+    _st_opts = sorted(statuses | {"TESTE"})
+    only_status = st.multiselect("Preencher só criativos com STATUS", _st_opts, default=["TESTE"],
+                                 help="Linhas com outro status (VALIDADO, DESCARTADO, PAUSADO…) não são mexidas.")
 
 # ----------------------------------------------------------------- 3. contas
 st.subheader("3. Contas de anúncio")
@@ -298,7 +300,8 @@ if layout and fb_keys:
         return compute(base)
 
     writes, summary = plan_writes(values, layout, blocks_to_fill, lookup, lambda t: extract_codes(t, rx),
-                                  only_empty=only_empty, skip_status=set(skip_status))
+                                  only_empty=only_empty, skip_status=set(skip_status),
+                                  only_status=set(only_status))
     df = pd.DataFrame(summary)
     found = int(df["encontrado"].sum()) if not df.empty else 0
     m1, m2, m3 = st.columns(3)
