@@ -23,6 +23,7 @@ ss.setdefault("fb_cache", {})        # (conta, de, até, filtro) -> Aggregator  
 ss.setdefault("fb_failed", {})       # conta -> erro
 ss.setdefault("rt_agg", None)
 ss.setdefault("rt_fields", [])
+ss.setdefault("rt_allowed", None)
 ss.setdefault("log", [])
 _log_lock = threading.Lock()
 
@@ -69,8 +70,9 @@ with st.sidebar:
                                 help="Seus links usam sub4 = nome do anúncio ({{ad.name}}). No automático, o app tenta descobrir sozinho.")
         rt_sales_field = st.text_input("Campo de VENDAS no RedTrack", value=secret("REDTRACK_SALES_FIELD", "conversions"))
         rt_revenue_field = st.text_input("Campo de FATURAMENTO no RedTrack", value=secret("REDTRACK_REVENUE_FIELD", "revenue"))
+        rt_cost_field = st.text_input("Campo de GASTO no RedTrack", value=secret("REDTRACK_COST_FIELD", "cost"))
+        rt_id_sub = st.selectbox("Sub com o ID do anúncio ({{ad.id}})", [f"sub{i}" for i in range(1, 21)], index=0)
         rt_tz = st.text_input("Fuso do RedTrack (vazio = padrão da conta)", value=secret("REDTRACK_TIMEZONE", ""))
-        rt_campaigns = st.text_input("IDs de campanha RedTrack (opcional, separados por vírgula)", value="")
         workers = st.slider("Contas do Facebook em paralelo", 1, 16, 6)
         usd_brl = st.number_input("Cotação do dólar (contas em USD viram R$)", min_value=0.0,
                                   value=float(usd_rate()), step=0.01, format="%.2f")
@@ -156,9 +158,34 @@ if layout:
     only_status = st.multiselect("Preencher só criativos com STATUS", _st_opts, default=["TESTE"],
                                  help="Linhas com outro status (VALIDADO, DESCARTADO, PAUSADO…) não são mexidas.")
 
-# ----------------------------------------------------------------- 3. contas
-st.subheader("3. Contas de anúncio")
-st.caption("Deixe marcado \"Todas as ativas\" para buscar em todas.")
+# ----------------------------------------------------------------- 3. campanhas RedTrack
+st.subheader("3. Campanhas do RedTrack")
+st.caption("Escolha as suas campanhas. O gasto, as vendas e os anúncios considerados vêm só delas — "
+           "assim não entra gasto de outros gestores.")
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_rt_campaigns(key: str):
+    return rt.fetch_campaigns(key)
+
+
+rt_camps: list[dict] = []
+if rt_key:
+    try:
+        with st.spinner("Carregando campanhas do RedTrack…"):
+            rt_camps = load_rt_campaigns(rt_key)
+    except Exception as e:
+        st.error(f"Erro ao listar campanhas do RedTrack: {e}")
+camp_label = {c["id"]: c["title"] for c in rt_camps}
+selected_camps = st.multiselect(
+    f"Campanhas ({len(rt_camps)} disponíveis — digite para buscar, pode escolher várias)",
+    list(camp_label), format_func=lambda i: camp_label.get(i, i), key="rt_camps_sel")
+if rt_camps and not selected_camps:
+    st.warning("Nenhuma campanha escolhida: vou usar TODAS as campanhas do RedTrack (inclui outros gestores).")
+
+# ----------------------------------------------------------------- 4. contas
+st.subheader("4. Contas de anúncio do Facebook")
+st.caption("Daqui vêm Hook, Body, CPM, CTR e CPC — só dos anúncios que estão nas campanhas escolhidas acima.")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -201,7 +228,7 @@ if accounts:
         st.caption(f"Contas em dólar são convertidas para R$ pela cotação {usd_brl:.2f} (dá para mudar em Avançado).")
 
 # ----------------------------------------------------------------- 4. buscar
-st.subheader("4. Buscar os dados")
+st.subheader("5. Buscar os dados")
 ready = bool(layout and fb_token and rt_key and selected_ids)
 b1, b2 = st.columns(2)
 go = b1.button("🚀 Buscar dados", type="primary", disabled=not ready)
@@ -223,12 +250,12 @@ def run_facebook(ids: list[str]) -> None:
         rows = fb.fetch_ad_insights(acc, since, until, fb_token, name_contains=name_filter,
                                     version=graph_version, log=log)
         mult = usd_brl if currency_of.get(acc) == "USD" else 1.0
-        agg = Aggregator(rx)
+        out = []
         for r in rows:
             base = fb.row_to_base(r)
             base["spend"] *= mult
-            agg.add(r.get("ad_name", ""), base, ad_id=r.get("ad_id", ""))
-        return agg, len(rows)
+            out.append((str(r.get("ad_id", "")), r.get("ad_name", ""), base))
+        return out, len(rows)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futs = {pool.submit(work, a): a for a in todo}
@@ -248,11 +275,26 @@ def run_facebook(ids: list[str]) -> None:
     bar.empty()
 
 
+def fb_rows_current():
+    for k in ss.fb_cache:
+        if k[1] == since.isoformat() and k[2] == until.isoformat() and k[5] == usd_brl and k[0] in selected_ids:
+            yield from ss.fb_cache[k]
+
+
+def build_fb(allowed: set[str] | None) -> Aggregator:
+    agg = Aggregator(rx)
+    for ad_id, name, base in fb_rows_current():
+        if allowed is None or ad_id in allowed:
+            agg.add(name, base, ad_id=ad_id)
+    return agg
+
+
 def run_redtrack() -> None:
     id_map: dict[str, str] = {}
-    for k in ss.fb_cache:
-        if k[1] == since.isoformat() and k[2] == until.isoformat():
-            id_map.update(ss.fb_cache[k].ids)
+    for ad_id, name, _ in fb_rows_current():
+        c = extract_codes(name, rx)
+        if c and ad_id:
+            id_map[ad_id] = c[0]
     group = rt_group
     with st.spinner("Buscando RedTrack…"):
         if group == "automático":
@@ -268,19 +310,26 @@ def run_redtrack() -> None:
                 return
             st.info(f"RedTrack: o criativo está no **{group}** (achei em {scores[group]} conversões).")
         ss.rt_group_used = group
-        camp = [c.strip() for c in rt_campaigns.split(",") if c.strip()]
+        camp = list(selected_camps)
         rows = rt.fetch_report_by_sub(rt_key, since, until, group=group, campaign_ids=camp or None,
                                       timezone=rt_tz, log=log)
+        ss.rt_allowed = None
+        if camp:
+            id_rows = rt.fetch_report_by_sub(rt_key, since, until, group=rt_id_sub, campaign_ids=camp,
+                                             timezone=rt_tz, log=log)
+            ss.rt_allowed = {str(r.get(rt_id_sub, "")).strip() for r in id_rows if str(r.get(rt_id_sub, "")).strip()}
+            log(f"🎯 {len(ss.rt_allowed)} anúncios (IDs) nas campanhas escolhidas")
     agg = Aggregator(rx)
     fields = set()
     for r in rows:
         fields.update(k for k, v in r.items() if isinstance(v, (int, float)))
-        agg.add(str(r.get(group, "")), {"sales": rt.num(r, rt_sales_field), "revenue": rt.num(r, rt_revenue_field)},
-                id_map=id_map)
+        agg.add(str(r.get(group, "")), {"sales": rt.num(r, rt_sales_field), "revenue": rt.num(r, rt_revenue_field),
+                                         "spend": rt.num(r, rt_cost_field)}, id_map=id_map)
     ss.rt_agg = agg
     ss.rt_fields = sorted(fields)
     total_sales = sum(v["sales"] for v in agg.data.values())
-    log(f"✅ RedTrack ({group}): {len(rows)} linhas, {len(agg.data)} criativos, {total_sales:.0f} vendas")
+    total_cost = sum(v["spend"] for v in agg.data.values())
+    log(f"✅ RedTrack ({group}): {len(rows)} linhas, {len(agg.data)} criativos, {total_sales:.0f} vendas, gasto {total_cost:,.2f}")
 
 
 if go or retry_failed:
@@ -300,14 +349,14 @@ if ss.fb_failed:
         st.dataframe(pd.DataFrame([{"conta": k, "erro": v} for k, v in ss.fb_failed.items()]), hide_index=True)
 
 # ----------------------------------------------------------------- 5. prévia e gravação
-fb_keys = [k for k in ss.fb_cache if k[1] == since.isoformat() and k[2] == until.isoformat() and k[5] == usd_brl
-           and k[0] in selected_ids] if layout else []
-if layout and fb_keys:
-    st.subheader("5. Conferir e gravar na planilha")
-    fb_all = Aggregator(rx)
-    for k in fb_keys:
-        fb_all.merge(ss.fb_cache[k])
+has_fb = any(True for _ in fb_rows_current()) if layout else False
+if layout and (has_fb or ss.rt_agg):
+    st.subheader("6. Conferir e gravar na planilha")
+    allowed = ss.get("rt_allowed")
+    fb_all = build_fb(allowed if allowed else None)
     rt_all = ss.rt_agg or Aggregator(rx)
+    if allowed:
+        st.caption(f"Facebook filtrado para os {len(allowed)} anúncios das campanhas escolhidas. Gasto, vendas e CPA vêm do RedTrack.")
 
     def lookup(codes):
         f = fb_all.sum_for(codes, include_variations)
@@ -318,6 +367,7 @@ if layout and fb_keys:
         if r:
             base["sales"] = r["sales"]
             base["revenue"] = r["revenue"]
+            base["rt_spend"] = r["spend"]
         return compute(base)
 
     writes, summary = plan_writes(values, layout, blocks_to_fill, lookup, lambda t: extract_codes(t, rx),
