@@ -5,11 +5,42 @@ Imita a interface do gspread usada pelo app: open_by_key → worksheets/workshee
 """
 from __future__ import annotations
 
-from .http import ApiError, get_json
+import random
+import time
+
+import requests
+
+from .http import ApiError
+
+_session = requests.Session()
+
+
+def _post(url: str, payload: dict, log=None, attempts: int = 6):
+    """POST com nova tentativa automática (rede, 429, 5xx)."""
+    last = None
+    for a in range(1, attempts + 1):
+        try:
+            r = _session.post(url, json=payload, timeout=300)
+            if r.status_code in (429, 500, 502, 503, 504):
+                last = f"HTTP {r.status_code}"
+            else:
+                try:
+                    return r.json()
+                except ValueError:
+                    raise ApiError(f"O script da planilha não respondeu JSON (HTTP {r.status_code}). "
+                                   "Confira se a implantação está como 'Qualquer pessoa'.")
+        except (requests.ConnectionError, requests.Timeout) as e:
+            last = str(e)
+        if a < attempts:
+            delay = min(60, 2 ** a) * (0.7 + random.random() * 0.6)
+            if log:
+                log(f"⏳ planilha: tentativa {a} falhou ({last}); tentando de novo em {delay:.0f}s")
+            time.sleep(delay)
+    raise ApiError(f"Planilha: falhou após {attempts} tentativas ({last})")
 
 
 def _call(url: str, payload: dict, log=None) -> dict:
-    res = get_json(url, method="POST", body=payload, timeout=300, log=log)
+    res = _post(url, payload, log)
     if not isinstance(res, dict):
         raise ApiError(f"Resposta inesperada do script da planilha: {str(res)[:200]}")
     if res.get("error"):
