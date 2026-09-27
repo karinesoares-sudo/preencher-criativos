@@ -77,14 +77,16 @@ def fetch_ad_insights(
     name_contains: str = "",
     version: str = DEFAULT_VERSION,
     log: Callable[[str], None] | None = None,
+    limit: int = 500,
 ) -> list[dict]:
-    """Insights no nível de anúncio (período somado). Se o Facebook reclamar de volume, divide o período."""
+    """Insights no nível de anúncio (período somado). Se o Facebook reclamar de volume, divide o período
+    e, se mesmo assim não der, pede páginas menores."""
     params = {
         "access_token": token,
         "level": "ad",
         "fields": ",".join(INSIGHT_FIELDS),
         "time_range": json.dumps({"since": since.isoformat(), "until": until.isoformat()}),
-        "limit": 500,
+        "limit": limit,
         "action_breakdowns": "action_type",
     }
     filtering = [{"field": "ad.impressions", "operator": "GREATER_THAN", "value": 0}]
@@ -95,13 +97,21 @@ def fetch_ad_insights(
     try:
         return _paginate(f"{GRAPH}/{version}/{account_id}/insights", params, log)
     except ApiError as e:
-        if e.too_much_data and since < until:
+        heavy = e.too_much_data or (e.status or 0) >= 500 or "Falhou após" in str(e)
+        if not heavy:
+            raise
+        if since < until:
             mid = since + timedelta(days=(until - since).days // 2)
             if log:
                 log(f"✂️ {account_id}: muito dado, dividindo {since}→{mid} e {mid + timedelta(days=1)}→{until}")
-            a = fetch_ad_insights(account_id, since, mid, token, name_contains=name_contains, version=version, log=log)
-            b = fetch_ad_insights(account_id, mid + timedelta(days=1), until, token, name_contains=name_contains, version=version, log=log)
-            return a + b
+            kw = dict(name_contains=name_contains, version=version, log=log, limit=limit)
+            return (fetch_ad_insights(account_id, since, mid, token, **kw)
+                    + fetch_ad_insights(account_id, mid + timedelta(days=1), until, token, **kw))
+        if limit > 25:
+            if log:
+                log(f"🔽 {account_id} {since}: pedindo páginas menores ({limit // 4})")
+            return fetch_ad_insights(account_id, since, until, token, name_contains=name_contains,
+                                     version=version, log=log, limit=max(25, limit // 4))
         raise
 
 
