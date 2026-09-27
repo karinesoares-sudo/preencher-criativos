@@ -87,9 +87,12 @@ def plan_writes(
     *,
     only_empty: bool = False,
     skip_status: set[str] | None = None,
+    only_status: set[str] | None = None,
 ) -> tuple[list[CellWrite], list[dict]]:
-    """Monta a lista de células a gravar + um resumo por linha (para a prévia)."""
+    """Monta a lista de células a gravar + um resumo por linha (para a prévia).
+    only_status: se informado, só preenche linhas cujo STATUS está nesse conjunto (ex.: {"TESTE"})."""
     skip_status = {normalize(s) for s in (skip_status or set())}
+    only_status = {normalize(s) for s in (only_status or set())}
     writes: list[CellWrite] = []
     summary: list[dict] = []
     for b in layout.blocks:
@@ -100,7 +103,10 @@ def plan_writes(
             codes = extract(creative)
             if not codes:
                 continue
-            if b.status_col is not None and normalize(cell(values, r, b.status_col)) in skip_status:
+            status = normalize(cell(values, r, b.status_col)) if b.status_col is not None else ""
+            if status in skip_status and status:
+                continue
+            if only_status and status not in only_status:
                 continue
             metrics = lookup(codes)
             summary.append({"bloco": b.title, "linha": r + 1, "criativo": creative,
