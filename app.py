@@ -42,6 +42,17 @@ def secret(name: str, default=""):
         return default
 
 
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def usd_rate() -> float:
+    """Cotação do dólar do dia (AwesomeAPI); se não conseguir, usa 5,50 e deixa editar."""
+    try:
+        import requests
+        r = requests.get("https://economia.awesomeapi.com.br/json/last/USD-BRL", timeout=10).json()
+        return round(float(r["USDBRL"]["bid"]), 2)
+    except Exception:
+        return 5.50
+
+
 # ----------------------------------------------------------------- barra lateral
 with st.sidebar:
     st.header("⚙️ Configurações")
@@ -60,6 +71,8 @@ with st.sidebar:
         rt_tz = st.text_input("Fuso do RedTrack (vazio = padrão da conta)", value=secret("REDTRACK_TIMEZONE", ""))
         rt_campaigns = st.text_input("IDs de campanha RedTrack (opcional, separados por vírgula)", value="")
         workers = st.slider("Contas do Facebook em paralelo", 1, 16, 6)
+        usd_brl = st.number_input("Cotação do dólar (contas em USD viram R$)", min_value=0.0,
+                                  value=float(usd_rate()), step=0.01, format="%.2f")
         include_variations = st.checkbox("Somar variações (LT1900 inclui LT1900.1, LT1900.2…)", value=False)
 
     if st.button("🧹 Limpar dados baixados"):
@@ -151,10 +164,12 @@ def load_accounts(token: str, version: str):
 
 
 accounts = []
+currency_of: dict[str, str] = {}
 if fb_token:
     try:
         with st.spinner("Carregando contas…"):
             accounts = load_accounts(fb_token, graph_version)
+            currency_of = {a["id"]: a["currency"] for a in accounts}
     except Exception as e:
         st.error(f"Erro ao listar contas do Facebook: {e}")
 else:
@@ -176,8 +191,11 @@ if accounts:
     name_filter = st.expander("Filtro por nome do anúncio (opcional)").text_input("Só anúncios cujo nome contém (opcional, acelera muito)", value=secret("AD_NAME_FILTER", ""),
                                 placeholder="ex.: LT")
     currencies = {a["currency"] for a in accounts if a["id"] in selected_ids}
-    if len(currencies) > 1:
-        st.warning(f"As contas escolhidas usam moedas diferentes ({', '.join(sorted(currencies))}). O gasto é somado sem conversão.")
+    other = currencies - {"BRL", "USD"}
+    if other:
+        st.warning(f"Há contas em {', '.join(sorted(other))}: o gasto delas entra sem conversão.")
+    if "USD" in currencies:
+        st.caption(f"Contas em dólar são convertidas para R$ pela cotação {usd_brl:.2f} (dá para mudar em Avançado).")
 
 # ----------------------------------------------------------------- 4. buscar
 st.subheader("4. Buscar os dados")
@@ -188,7 +206,7 @@ retry_failed = b2.button(f"🔁 Tentar de novo só as que falharam ({len(ss.fb_f
 
 
 def run_facebook(ids: list[str]) -> None:
-    key = lambda a: (a, since.isoformat(), until.isoformat(), name_filter.strip(), rx.pattern)
+    key = lambda a: (a, since.isoformat(), until.isoformat(), name_filter.strip(), rx.pattern, usd_brl)
     todo = [a for a in ids if key(a) not in ss.fb_cache]
     skipped = len(ids) - len(todo)
     if skipped:
@@ -201,9 +219,12 @@ def run_facebook(ids: list[str]) -> None:
     def work(acc):
         rows = fb.fetch_ad_insights(acc, since, until, fb_token, name_contains=name_filter,
                                     version=graph_version, log=log)
+        mult = usd_brl if currency_of.get(acc) == "USD" else 1.0
         agg = Aggregator(rx)
         for r in rows:
-            agg.add(r.get("ad_name", ""), fb.row_to_base(r))
+            base = fb.row_to_base(r)
+            base["spend"] *= mult
+            agg.add(r.get("ad_name", ""), base)
         return agg, len(rows)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -256,7 +277,7 @@ if ss.fb_failed:
         st.dataframe(pd.DataFrame([{"conta": k, "erro": v} for k, v in ss.fb_failed.items()]), hide_index=True)
 
 # ----------------------------------------------------------------- 5. prévia e gravação
-fb_keys = [k for k in ss.fb_cache if k[1] == since.isoformat() and k[2] == until.isoformat()
+fb_keys = [k for k in ss.fb_cache if k[1] == since.isoformat() and k[2] == until.isoformat() and k[5] == usd_brl
            and k[0] in selected_ids] if layout else []
 if layout and fb_keys:
     st.subheader("5. Conferir e gravar na planilha")
