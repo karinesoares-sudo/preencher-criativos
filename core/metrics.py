@@ -92,17 +92,20 @@ def _div(a: float, b: float) -> float:
 
 
 def compute(base: dict[str, float]) -> dict[str, float]:
+    """CPM/CTR/CPC/Hook/Body usam os números do Facebook; GASTO/CPA/ROAS usam o gasto do RedTrack
+    quando ele existe (chave 'rt_spend'), para não misturar gasto de outros gestores."""
     imp, spend, clicks, sales = base["impressions"], base["spend"], base["clicks"], base["sales"]
+    cost = base.get("rt_spend", spend)
     return {
         "hook": _div(base["video_3s"], imp),
         "body": _div(base["video_p75"], imp),
         "cpm": _div(spend, imp) * 1000,
         "ctr": _div(clicks, imp),
         "cpc": _div(spend, clicks),
-        "gasto": spend,
+        "gasto": cost,
         "vendas": sales,
-        "cpa": _div(spend, sales),
-        "roas": _div(base["revenue"], spend),
+        "cpa": _div(cost, sales),
+        "roas": _div(base["revenue"], cost),
         "faturamento": base["revenue"],
         "impressoes": imp,
         "cliques": clicks,
