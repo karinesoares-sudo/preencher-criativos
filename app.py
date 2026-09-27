@@ -86,6 +86,10 @@ st.caption("Cole o link da planilha. A aba DADOS_TESTE já vem escolhida.")
 
 @st.cache_resource(show_spinner=False)
 def gclient():
+    url = secret("SHEETS_WEBAPP_URL", "")
+    if url:
+        from core.gas import GasClient
+        return GasClient(url)
     import gspread
     import json as _json
     raw = secret("GOOGLE_JSON", "")
@@ -106,10 +110,10 @@ if sheet_url:
         values = ws.get_all_values()
         layout = detect_layout(values)
     except KeyError:
-        st.error("Falta a credencial `gcp_service_account` nos Secrets. Veja o README.")
+        st.error("Falta configurar o acesso à planilha (SHEETS_WEBAPP_URL) nos Secrets.")
     except Exception as e:
         st.error(f"Não consegui ler a planilha: {e}")
-        st.info("Confira se a planilha está compartilhada (como Editor) com o e-mail da conta de serviço.")
+        st.info("Confira se o link está certo e se a sua conta Google consegue editar essa planilha.")
 
 if layout:
     fillable = [b for b in layout.blocks if b.metric_cols]
