@@ -62,10 +62,11 @@ with st.sidebar:
 
     with st.expander("Avançado", expanded=False):
         graph_version = st.text_input("Versão Graph API", value=secret("FB_GRAPH_VERSION", fb.DEFAULT_VERSION))
-        _subs = [f"sub{i}" for i in range(1, 21)] + ["rt_ad", "rt_campaign", "rt_adgroup"]
-        _def_sub = secret("REDTRACK_SUB", "sub5")
+        _subs = ["automático"] + [f"sub{i}" for i in range(1, 21)] + ["rt_ad", "rt_campaign", "rt_adgroup", "rt_ad_id"]
+        _def_sub = secret("REDTRACK_SUB", "sub4")
         rt_group = st.selectbox("Sub do RedTrack com o nome do anúncio", _subs,
-                                index=_subs.index(_def_sub) if _def_sub in _subs else 4)
+                                index=_subs.index(_def_sub) if _def_sub in _subs else 0,
+                                help="Seus links usam sub4 = nome do anúncio ({{ad.name}}). No automático, o app tenta descobrir sozinho.")
         rt_sales_field = st.text_input("Campo de VENDAS no RedTrack", value=secret("REDTRACK_SALES_FIELD", "conversions"))
         rt_revenue_field = st.text_input("Campo de FATURAMENTO no RedTrack", value=secret("REDTRACK_REVENUE_FIELD", "revenue"))
         rt_tz = st.text_input("Fuso do RedTrack (vazio = padrão da conta)", value=secret("REDTRACK_TIMEZONE", ""))
@@ -226,7 +227,7 @@ def run_facebook(ids: list[str]) -> None:
         for r in rows:
             base = fb.row_to_base(r)
             base["spend"] *= mult
-            agg.add(r.get("ad_name", ""), base)
+            agg.add(r.get("ad_name", ""), base, ad_id=r.get("ad_id", ""))
         return agg, len(rows)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -248,18 +249,38 @@ def run_facebook(ids: list[str]) -> None:
 
 
 def run_redtrack() -> None:
+    id_map: dict[str, str] = {}
+    for k in ss.fb_cache:
+        if k[1] == since.isoformat() and k[2] == until.isoformat():
+            id_map.update(ss.fb_cache[k].ids)
+    group = rt_group
     with st.spinner("Buscando RedTrack…"):
+        if group == "automático":
+            def matches(v):
+                return bool(extract_codes(v, rx)) or v.strip() in id_map
+            group, scores, types = rt.detect_sub(rt_key, since, until, matches, log=log)
+            ss.rt_types = types
+            if not group:
+                st.warning("Não achei o código do criativo em nenhum sub das conversões do RedTrack neste período. "
+                           "Escolha o sub manualmente em Avançado.")
+                log("⚠️ RedTrack: nenhum sub com o código do criativo")
+                ss.rt_agg = Aggregator(rx)
+                return
+            st.info(f"RedTrack: o criativo está no **{group}** (achei em {scores[group]} conversões).")
+        ss.rt_group_used = group
         camp = [c.strip() for c in rt_campaigns.split(",") if c.strip()]
-        rows = rt.fetch_report_by_sub(rt_key, since, until, group=rt_group, campaign_ids=camp or None,
+        rows = rt.fetch_report_by_sub(rt_key, since, until, group=group, campaign_ids=camp or None,
                                       timezone=rt_tz, log=log)
     agg = Aggregator(rx)
     fields = set()
     for r in rows:
         fields.update(k for k, v in r.items() if isinstance(v, (int, float)))
-        agg.add(str(r.get(rt_group, "")), {"sales": rt.num(r, rt_sales_field), "revenue": rt.num(r, rt_revenue_field)})
+        agg.add(str(r.get(group, "")), {"sales": rt.num(r, rt_sales_field), "revenue": rt.num(r, rt_revenue_field)},
+                id_map=id_map)
     ss.rt_agg = agg
     ss.rt_fields = sorted(fields)
-    log(f"✅ RedTrack: {len(rows)} linhas, {len(agg.data)} criativos identificados")
+    total_sales = sum(v["sales"] for v in agg.data.values())
+    log(f"✅ RedTrack ({group}): {len(rows)} linhas, {len(agg.data)} criativos, {total_sales:.0f} vendas")
 
 
 if go or retry_failed:
@@ -320,6 +341,8 @@ if layout and fb_keys:
             st.dataframe(pd.DataFrame(top_un, columns=["nome do anúncio", "gasto"]), hide_index=True)
         if ss.rt_fields:
             st.caption("Campos numéricos disponíveis no RedTrack: " + ", ".join(ss.rt_fields))
+        if ss.get("rt_types"):
+            st.caption("Tipos de conversão no período: " + ", ".join(f"{k} ({v})" for k, v in ss.rt_types.items()))
 
     if st.button(f"💾 Gravar {len(writes)} células na planilha", type="primary", disabled=not writes):
         try:
