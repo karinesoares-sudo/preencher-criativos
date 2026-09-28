@@ -160,11 +160,12 @@ if layout:
     only_status = st.multiselect("Preencher só criativos com STATUS", _st_opts, default=["TESTE"],
                                  help="Linhas com outro status (VALIDADO, DESCARTADO, PAUSADO…) não são mexidas.")
     auto_status = st.checkbox("Finalizar testes automaticamente (TESTE DE CRIATIVO)", value=True,
-                              help="Gasto acima do limite: 2+ vendas → VALIDADO; 0 ou 1 venda → DESCARTADO. "
+                              help="Gasto acima do limite: 2+ vendas → VALIDADO; 0 ou 1 venda → DESCARTADO. Sem nenhuma venda, descarta já a partir do segundo valor. "
                                    "A data FIM vira a data final do período.")
-    rs1, rs2 = st.columns(2)
+    rs1, rs2, rs3 = st.columns(3)
     rule_spend = rs1.number_input("Limite de gasto (R$)", value=1000.0, step=100.0, disabled=not auto_status)
     rule_sales = rs2.number_input("Vendas mínimas para validar", value=2, step=1, disabled=not auto_status)
+    rule_zero = rs3.number_input("Sem venda: descartar acima de (R$)", value=800.0, step=100.0, disabled=not auto_status)
 
 # ----------------------------------------------------------------- 3. campanhas RedTrack
 st.subheader("3. Campanhas do RedTrack")
@@ -421,7 +422,7 @@ if layout and (has_fb or ss.rt_agg):
     writes, summary = plan_writes(values, layout, blocks_to_fill, lookup, lambda t: extract_codes(t, rx),
                                   only_empty=only_empty, skip_status=set(skip_status),
                                   only_status=set(only_status),
-                                  status_rule={"spend": rule_spend, "min_sales": rule_sales,
+                                  status_rule={"spend": rule_spend, "min_sales": rule_sales, "zero_spend": rule_zero,
                                                "end_date": until.strftime("%d/%m/%Y")} if auto_status else None)
     df = pd.DataFrame(summary)
     found = int(df["encontrado"].sum()) if not df.empty else 0
