@@ -166,6 +166,9 @@ if layout:
     rule_spend = rs1.number_input("Limite de gasto (R$)", value=1000.0, step=100.0, disabled=not auto_status)
     rule_sales = rs2.number_input("Vendas mínimas para validar", value=2, step=1, disabled=not auto_status)
     rule_zero = rs3.number_input("Sem venda: descartar acima de (R$)", value=800.0, step=100.0, disabled=not auto_status)
+    rule_cpa = st.number_input("CPA máximo para validar (R$) — acima disso vira DESCARTADO (0 = sem limite)",
+                               value=900.0, step=50.0, disabled=not auto_status,
+                               help="Ajuste por produto. Ex.: Soda Peak (afiliado) = 900.")
 
 # ----------------------------------------------------------------- 3. campanhas RedTrack
 st.subheader("3. Campanhas do RedTrack")
@@ -422,7 +425,7 @@ if layout and (has_fb or ss.rt_agg):
     writes, summary = plan_writes(values, layout, blocks_to_fill, lookup, lambda t: extract_codes(t, rx),
                                   only_empty=only_empty, skip_status=set(skip_status),
                                   only_status=set(only_status),
-                                  status_rule={"spend": rule_spend, "min_sales": rule_sales, "zero_spend": rule_zero,
+                                  status_rule={"spend": rule_spend, "min_sales": rule_sales, "zero_spend": rule_zero, "max_cpa": rule_cpa,
                                                "end_date": until.strftime("%d/%m/%Y")} if auto_status else None)
     df = pd.DataFrame(summary)
     found = int(df["encontrado"].sum()) if not df.empty else 0
