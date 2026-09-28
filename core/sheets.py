@@ -128,6 +128,8 @@ def plan_writes(
                 new_status = None
                 if metrics["gasto"] > rule.get("spend", 1000):
                     new_status = "VALIDADO" if metrics["vendas"] >= rule.get("min_sales", 2) else "DESCARTADO"
+                    if new_status == "VALIDADO" and rule.get("max_cpa") and metrics["cpa"] > rule["max_cpa"]:
+                        new_status = "DESCARTADO"  # vendeu, mas o CPA ficou alto demais
                 elif metrics["gasto"] > rule.get("zero_spend", 800) and metrics["vendas"] == 0:
                     new_status = "DESCARTADO"  # gastou e não vendeu nada: descarta antes
                 if new_status:
