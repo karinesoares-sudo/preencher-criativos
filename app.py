@@ -68,7 +68,9 @@ with st.sidebar:
         rt_group = st.selectbox("Sub do RedTrack com o nome do anúncio", _subs,
                                 index=_subs.index(_def_sub) if _def_sub in _subs else 0,
                                 help="Seus links usam sub4 = nome do anúncio ({{ad.name}}). No automático, o app tenta descobrir sozinho.")
-        rt_sales_field = st.text_input("Campo de VENDAS no RedTrack", value=secret("REDTRACK_SALES_FIELD", "conversions"))
+        rt_sales_type = st.text_input("Tipo de conversão que conta como VENDA", value=secret("REDTRACK_SALES_TYPE", "Purchase"),
+                                      help="Deixe vazio para usar o campo do relatório abaixo.")
+        rt_sales_field = st.text_input("Campo de VENDAS no relatório (se o tipo acima estiver vazio)", value=secret("REDTRACK_SALES_FIELD", "conversions"))
         rt_revenue_field = st.text_input("Campo de FATURAMENTO no RedTrack", value=secret("REDTRACK_REVENUE_FIELD", "revenue"))
         rt_cost_field = st.text_input("Campo de GASTO no RedTrack", value=secret("REDTRACK_COST_FIELD", "cost"))
         rt_id_sub = st.selectbox("Sub com o ID do anúncio ({{ad.id}})", [f"sub{i}" for i in range(1, 21)], index=0)
@@ -157,6 +159,12 @@ if layout:
     _st_opts = sorted(statuses | {"TESTE"})
     only_status = st.multiselect("Preencher só criativos com STATUS", _st_opts, default=["TESTE"],
                                  help="Linhas com outro status (VALIDADO, DESCARTADO, PAUSADO…) não são mexidas.")
+    auto_status = st.checkbox("Finalizar testes automaticamente (TESTE DE CRIATIVO)", value=True,
+                              help="Gasto acima do limite: 2+ vendas → VALIDADO; 0 ou 1 venda → DESCARTADO. "
+                                   "A data FIM vira a data final do período.")
+    rs1, rs2 = st.columns(2)
+    rule_spend = rs1.number_input("Limite de gasto (R$)", value=1000.0, step=100.0, disabled=not auto_status)
+    rule_sales = rs2.number_input("Vendas mínimas para validar", value=2, step=1, disabled=not auto_status)
 
 # ----------------------------------------------------------------- 3. campanhas RedTrack
 st.subheader("3. Campanhas do RedTrack")
@@ -341,10 +349,30 @@ def run_redtrack() -> None:
     ss.rt_rowcount = len(rows)
     agg = Aggregator(rx)
     fields = set()
+    by_type = bool(rt_sales_type.strip())
     for r in rows:
         fields.update(k for k, v in r.items() if isinstance(v, (int, float)))
-        agg.add(str(r.get(group, "")), {"sales": rt.num(r, rt_sales_field), "revenue": rt.num(r, rt_revenue_field),
-                                         "spend": rt.num(r, rt_cost_field)}, id_map=id_map)
+        vals = {"spend": rt.num(r, rt_cost_field)}
+        if not by_type:
+            vals.update(sales=rt.num(r, rt_sales_field), revenue=rt.num(r, rt_revenue_field))
+        agg.add(str(r.get(group, "")), vals, id_map=id_map)
+    if by_type:
+        # Conta as vendas uma a uma pela lista de conversões (tipo = Purchase), com o faturamento (payout)
+        with st.spinner("Contando vendas no RedTrack…"):
+            convs = rt.fetch_conversions(rt_key, since, until, campaign_ids=list(selected_camps) or None, log=log)
+        want = rt_sales_type.strip().lower()
+        types: dict[str, int] = {}
+        for c in convs:
+            t = str(c.get("type") or "?")
+            types[t] = types.get(t, 0) + 1
+            if t.strip().lower() != want:
+                continue
+            name = str(c.get(group) or "")
+            if not extract_codes(name, rx):
+                name = str(c.get(rt_id_sub) or name)  # sem nome? tenta pelo ID do anúncio
+            agg.add(name, {"sales": 1.0, "revenue": rt.num(c, "payout")}, id_map=id_map)
+        ss.rt_types = types
+        log(f"🧾 {len(convs)} conversões; tipos: " + ", ".join(f"{k}={v}" for k, v in types.items()))
     ss.rt_agg = agg
     ss.rt_fields = sorted(fields)
     total_sales = sum(v["sales"] for v in agg.data.values())
@@ -392,7 +420,9 @@ if layout and (has_fb or ss.rt_agg):
 
     writes, summary = plan_writes(values, layout, blocks_to_fill, lookup, lambda t: extract_codes(t, rx),
                                   only_empty=only_empty, skip_status=set(skip_status),
-                                  only_status=set(only_status))
+                                  only_status=set(only_status),
+                                  status_rule={"spend": rule_spend, "min_sales": rule_sales,
+                                               "end_date": until.strftime("%d/%m/%Y")} if auto_status else None)
     df = pd.DataFrame(summary)
     found = int(df["encontrado"].sum()) if not df.empty else 0
     m1, m2, m3 = st.columns(3)
