@@ -128,6 +128,8 @@ def plan_writes(
                 new_status = None
                 if metrics["gasto"] > rule.get("spend", 1000):
                     new_status = "VALIDADO" if metrics["vendas"] >= rule.get("min_sales", 2) else "DESCARTADO"
+                elif metrics["gasto"] > rule.get("zero_spend", 800) and metrics["vendas"] == 0:
+                    new_status = "DESCARTADO"  # gastou e não vendeu nada: descarta antes
                 if new_status:
                     summary[-1]["novo status"] = new_status
                     writes.append(CellWrite(r, b.status_col, new_status, "status",
